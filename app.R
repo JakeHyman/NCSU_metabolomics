@@ -7,6 +7,7 @@ library(shiny)
 library(plotly)
 library(DT)
 library(tidyr)
+library(tidyverse)
 
 df<- read.csv('processed_data_complete.csv')
 
@@ -14,18 +15,28 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       checkboxGroupInput("substrate1", "Select Substrate 1", choices = names(df[4:22]), selected = names(df[4:6])),
-      checkboxGroupInput("substrate2", "Select Substrate 2", choices = names(df[4:22]), selected = names(df[7:9])),
-      numericInput("percent_protein", "Input Percent Total Protein to Display", value = 0.01, min = 0, max = 100),
-      sliderInput("gene_range", "Adjust Target Gene Range", min = 1, max = max(df$gene, na.rm = T), value = c(1, max(df$gene, na.rm = T))),
-      numericInput('clusters', 'Gene Clusters', 3, min = 1, max = max(df$gene, na.rm = T))
+      checkboxGroupInput("substrate2", "Select Substrate 2", choices = names(df[4:22]), selected = names(df[7:9]))
     ),
     mainPanel(
-      dataTableOutput('working_dataframe'),
-      plotly::plotlyOutput("volcano_plot_1"),
-      plotly::plotlyOutput("volcano_clust_1"),
-      numericInput("geneID", "Enter Gene ID", value = 1000, min = 1, max = max(df$gene, na.rm = T)), #new needs to be added to server
-      checkboxGroupInput('gene_comp', 'Select Substrates', choices = names(df[23:29]), selected = names(df[23:24])), #new needs to be added to server
-      plotly::plotlyOutput("gene_comparison")
+      tabsetPanel(
+        tabPanel( 'Proteome',
+          plotly::plotlyOutput("volcano_plot_1"),
+          plotly::plotlyOutput("volcano_clust_1"),
+          numericInput("percent_protein", "Protein NSAF Must Be Greater Than", value = 0.00, min = 0, max = 100),
+          sliderInput("gene_range", "Adjust Target Gene Range", min = 1, max = max(df$gene, na.rm = T), value = c(1, max(df$gene, na.rm = T))),
+          numericInput('clusters', 'Gene Clusters', 3, min = 1, max = max(df$gene, na.rm = T))
+        ),
+        tabPanel('Proteome table',
+          dataTableOutput('working_dataframe')
+        ),
+        
+        tabPanel('Specific Protein',
+          numericInput("geneID", "Enter Gene ID", value = 5533, min = 1, max = max(df$gene, na.rm = T)),
+          checkboxGroupInput('gene_comp', 'Select Substrates', choices = names(df[23:29]), selected = names(df[23:29])),
+          plotly::plotlyOutput("gene_comparison"),
+          plotly::plotlyOutput("gene_heat_map")
+        )
+      )
     )
   )
 )
@@ -77,8 +88,8 @@ server <- function(input, output, session) {
   volcano_1 <- function() {
     ggplot(data3(), aes(x = change, y = neglog10pvalues, color = gene))+
       geom_point()+
-      xlab("Change (NSAF)")+
-      ylab("-log10(p-value)")
+      labs(title = sprintf("Proteom Change from %s to %s", input$substrate1[1], input$substrate2[1]), x = "Change (NSAF)", y = "-log10(p-value)")+
+      theme(plot.title = element_text(hjust = 0.5))
   }
   
   cluster_setup <- reactive({
@@ -95,8 +106,7 @@ server <- function(input, output, session) {
   volcano_clust <- function() {
     ggplot(data3(), aes(x = change, y = neglog10pvalues, color = as.factor(clusters()$cluster)))+
       geom_point(aes(text = data3()$gene))+
-      xlab("Change (NSAF)")+
-      ylab("-log10(p-value)")
+      labs( x = "Change (NSAF)", y = "-log10(p-value)", color = 'Cluster')
   }
   
   comp_gene <- reactive({
@@ -106,11 +116,44 @@ server <- function(input, output, session) {
     datalong <- pivot_longer(data_gene, cols = colnames(data_gene), names_to = "name")
     return(datalong)
   })
+  
+  heatmap <- reactive({
+    data_gene2 <- df%>%
+      filter(gene == input$geneID)%>%
+      select(c(1,4:22))
     
+    datalong2 <- pivot_longer(data_gene2, cols = colnames(data_gene2), names_to = 'name')
+    datalong2['substrate'] <- 'unknown'
+    datalong2 <- datalong2[2:20, 2:3]
+    datalong2[1:3, 2] <- "Acetoin"
+    datalong2[4:6, 2] <- 'C2B'
+    datalong2[7:9, 2] <- 'EtOH'
+    datalong2[10:12, 2] <- 'HIBA'
+    datalong2[13:15, 2] <- 'T2B'
+    datalong2[16:17, 2] <- 'Tetradecane'
+    datalong2[18:19, 2] <- 'n.Heptane'
+    attach(datalong2)
+    comparison <- pairwise.t.test(value, substrate, p.adjust.method = "bonf")
+    comp <- as.data.frame(comparison$p.value)
+    comp <- comp%>%
+      rownames_to_column()%>%
+      gather(colname, value, -rowname)
+    return(comp)
+  })
+  
+  gene_heat_plot <- function() {
+    ggplot(heatmap(), aes(x = rowname, y = colname, fill = value))+
+      geom_tile()+
+      labs(title = "Comparative P-values Between NSAF Values", x = "", y = "")+
+      theme(plot.title = element_text(hjust = 0.5))
+  }
+
   
   gene_comp_plot <- function() {
     ggplot(comp_gene())+
-      geom_col(aes(x= name, y = value))
+      geom_col(aes(x= name, y = value, color = name, fill = name))+
+      labs(title = sprintf('Average NSAF for Gene %s', input$geneID), x = 'Substrate', y = 'Average NSAF')+
+      theme(axis.text.x = element_text(angle = 45))
     }
   
   output$working_dataframe <- renderDataTable(data3())
@@ -120,6 +163,8 @@ server <- function(input, output, session) {
   output$volcano_clust_1 <- plotly::renderPlotly({volcano_clust()})
   
   output$gene_comparison <- plotly::renderPlotly({gene_comp_plot()})
+  
+  output$gene_heat_map <- plotly::renderPlotly({gene_heat_plot()})
   
 }
 
